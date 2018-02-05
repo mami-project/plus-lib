@@ -270,6 +270,8 @@ func (plus *ConnectionManager) Accept() *Connection {
 // It is spawned by the Listen() function.
 func (plus *ConnectionManager) listenLoop() error {
 	for {
+		log(0, "cm: Awaiting next packet")
+
 		connection, plusPacket, addr, feedbackData, err := plus.ReadAndProcessPacket()
 
 		if err != nil {
@@ -448,6 +450,7 @@ func (plus *ConnectionManager) ProcessPacket(plusPacket *packet.PLUSPacket, remo
 	plusPacket.Header())*/
 
 	plus.mutex.Lock()
+	log(0, "cm: Processing packet [%d/%d]", plusPacket.PSN(), plusPacket.PSE())
 
 	cat := plusPacket.CAT()
 
@@ -491,10 +494,10 @@ func (plus *ConnectionManager) ProcessPacket(plusPacket *packet.PLUSPacket, remo
 		pcfbuf := []byte{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,
 				31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,
 				60,61,62,63}
-
-		if packetPSN % 1000 == 0 {
-			connection.queuePCFRequest(packet.PCF_TYPE_HOP_COUNT, packet.PCF_INTEGRITY_ZERO, pcfbuf) // send a HOP_COUNT request
-		} */
+    */
+	if packetPSN % 1000 == 0 {
+		connection.queuePCFRequest(packet.PCF_TYPE_HOP_COUNT, packet.PCF_INTEGRITY_ZERO, []byte{0}) // send a HOP_COUNT request
+	}
 
 	connection.pse = packetPSN
 
