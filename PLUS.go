@@ -358,7 +358,7 @@ func (plus *ConnectionManager) listenLoop() error {
 			log(0, "cm: Forwarding packet...")
 
 			select {
-			case connection.inChannel <- &packetReceived{packet: plusPacket, err: err}:
+			case connection.inChannel <- &packetReceived{packet: plusPacket, err: err, from: addr}:
 				log(0, "cm: Packet forwarded...")
 			default:
 				log(0, "cm: Consumer too slow!")
@@ -791,6 +791,7 @@ type pcfRequest struct {
 // pair of (packet, error)
 type packetReceived struct {
 	packet *packet.PLUSPacket
+	from net.Addr
 	err    error
 }
 
@@ -899,6 +900,26 @@ func (connection *Connection) Read(data []byte) (int, error) {
 	n := copy(data, plusPacket.Payload())
 
 	return n, nil
+}
+
+// Read data from this connection. 
+// WARNING: Only use this if in listen mode.
+func (connection *Connection) ReadAndAddr(data []byte) (int, net.Addr, error) {
+	packetReceived, ok := <-connection.inChannel //validation/decription happens in the feeder
+
+	if !ok {
+		return 0, packetReceived.from, ErrConnClosed
+	}
+
+	plusPacket, err := packetReceived.packet, packetReceived.err
+
+	if err != nil {
+		return 0, packetReceived.from, err
+	}
+
+	n := copy(data, plusPacket.Payload())
+
+	return n, packetReceived.from, nil
 }
 
 // Write data to this connection.
