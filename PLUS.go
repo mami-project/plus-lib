@@ -167,6 +167,8 @@ type ConnectionManager struct {
 	packetPool sync.Pool
 }
 
+var MaxPacketSize int = 8192
+
 // Creates a new connection manager (server) using packetConn as the underlying
 // packet connection.
 func NewConnectionManager(packetConn net.PacketConn) *ConnectionManager {
@@ -175,7 +177,7 @@ func NewConnectionManager(packetConn net.PacketConn) *ConnectionManager {
 		connections:              make(map[uint64]*Connection),
 		mutex:                    &sync.Mutex{},
 		packetConn:               packetConn,
-		maxPacketSize:            8192,
+		maxPacketSize:            MaxPacketSize,
 		dropUndecryptablePackets: true,
 		newConnections:           make(chan *Connection, 16),
 		bufPool:                  sync.Pool{New: func() interface{} { return allocBuf(connectionManager) }},
@@ -195,7 +197,7 @@ func NewConnectionManagerClient(packetConn net.PacketConn, connectionId uint64, 
 		connections:              make(map[uint64]*Connection),
 		mutex:                    &sync.Mutex{},
 		packetConn:               packetConn,
-		maxPacketSize:            8192,
+		maxPacketSize:            MaxPacketSize,
 		clientMode:               true,
 		clientCAT:                connectionId,
 		dropUndecryptablePackets: true,
@@ -780,6 +782,8 @@ type Connection struct {
 
 	sendBuffer   []byte
 	headerBuffer []byte
+
+	readDeadline *time.Timer
 }
 
 type pcfRequest struct {
@@ -885,41 +889,35 @@ var ErrConnClosed error = errors.New("Connection was closed!")
 // Read data from this connection. 
 // WARNING: Only use this if in listen mode.
 func (connection *Connection) Read(data []byte) (int, error) {
-	packetReceived, ok := <-connection.inChannel //validation/decription happens in the feeder
-
-	if !ok {
-		return 0, ErrConnClosed
-	}
-
-	plusPacket, err := packetReceived.packet, packetReceived.err
-
-	if err != nil {
-		return 0, err
-	}
-
-	n := copy(data, plusPacket.Payload())
-
-	return n, nil
+	n, _, err := connection.ReadAndAddr(data)
+	return n, err
 }
+
+var ErrReadTimeout error = errors.New("Read timeout.")
 
 // Read data from this connection. 
 // WARNING: Only use this if in listen mode.
 func (connection *Connection) ReadAndAddr(data []byte) (int, net.Addr, error) {
-	packetReceived, ok := <-connection.inChannel //validation/decription happens in the feeder
+	select {
+	case packetReceived, ok := <-connection.inChannel: //validation/decription happens in the feeder
 
-	if !ok {
-		return 0, packetReceived.from, ErrConnClosed
+		if !ok {
+			return 0, packetReceived.from, ErrConnClosed
+		}
+
+		plusPacket, err := packetReceived.packet, packetReceived.err
+
+		if err != nil {
+			return 0, packetReceived.from, err
+		}
+
+		n := copy(data, plusPacket.Payload())
+
+		return n, packetReceived.from, nil
+
+	case _ = <- connection.readDeadline.C:
+		return -1, nil, ErrReadTimeout
 	}
-
-	plusPacket, err := packetReceived.packet, packetReceived.err
-
-	if err != nil {
-		return 0, packetReceived.from, err
-	}
-
-	n := copy(data, plusPacket.Payload())
-
-	return n, packetReceived.from, nil
 }
 
 // Write data to this connection.
@@ -1004,7 +1002,8 @@ func (connection *Connection) write(data []byte, prefix byte) (int, error) {
 
 	connection.connManager.ReturnBuffer(buffer)
 
-	return n, err
+	_ = n
+	return len(data), err
 }
 
 // Send feedback data. Don't call this if you use the Listen() method
@@ -1489,7 +1488,8 @@ func (*Connection) SetDeadline(t time.Time) error {
 }
 
 // TODO
-func (*Connection) SetReadDeadline(t time.Time) error {
+func (c *Connection) SetReadDeadline(t time.Time) error {
+	c.readDeadline = time.NewTimer(t.Sub(time.Now()))
 	return nil
 }
 
