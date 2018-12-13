@@ -13,7 +13,7 @@ import "math/big"
 import m "math"
 
 var prng *rand.Rand = nil
-var prngMutex *sync.Mutex = &sync.Mutex {}
+var prngMutex *sync.Mutex = &sync.Mutex{}
 
 // Returns a cryptographically strong random PSN value
 // if possible, otherwise it will fallback to a regular
@@ -89,7 +89,7 @@ type CryptoContext interface {
 // Provides PLUS with methods to send feedback back.
 // Relevant for PCF capabilities. You must not read or write to the
 // connection or change the connection's state during these callbacks.
-// This call back is only invoked when the connection manager is in listen mode. 
+// This call back is only invoked when the connection manager is in listen mode.
 type FeedbackChannel interface {
 	// Send feedback back through.
 	SendFeedback([]byte) error
@@ -102,12 +102,12 @@ type FeedbackChannel interface {
 // Manages connections. You must not change attributes of the connection
 // manager during the InitConn callback. The connection manager will create new connections
 // as necessary invoking the InitConn callback during connection creation.
-// 
+//
 // In transparent mode the connection manager will handle feedback internally and won't invoke
 // the SendFeedback callback and you also don't have to call AddFeedback. In transparent mode
 // the connection manager will send feedback data back automatically. To distinguish
 // data packets from feedback packets it will secretly/transparentely add a prefix byte
-// (0xFF = feedback packet) (0x00 = data packet). 
+// (0xFF = feedback packet) (0x00 = data packet).
 //
 // In listen mode the connection manager will listen automatically on the connection and handle
 // read/writes. It is activated by calling the Listen() function. It is possible to use the
@@ -115,13 +115,13 @@ type FeedbackChannel interface {
 // `PrepareNextPacket`/`PrepareNextPacketRaw` manually as well as it is possible to call
 // `ReadPacket`/`WritePacket` manually (which will read from the underlying net.PacketConn). However,
 // it's also possible to use the connection manager without any underlying connection simply by feeding
-// data to it. 
+// data to it.
 //
 // The connection manager can be used in various ways to allow easy integration into existing code
 // that may have very different software architecture. The connection manager is aimed at providing
 // a means of integration that requires little changes to existing code and thus supports many different
 // use cases. The downside of this is however that the API is a bit more complicated and one must take
-// care especially when mixing different modes (which is also supported). 
+// care especially when mixing different modes (which is also supported).
 type ConnectionManager struct {
 	// map of connections
 	connections map[uint64]*Connection
@@ -336,7 +336,6 @@ func (plus *ConnectionManager) listenLoop() error {
 				plusPacket.HeaderWithZeroes(),
 				plusPacket.Payload())
 
-
 			packetValid := ok
 
 			if err != nil && plus.dropUndecryptablePackets { //drop undecryptable packets?
@@ -370,7 +369,7 @@ func (plus *ConnectionManager) listenLoop() error {
 
 		if connection.connManager.transparentMode {
 			if feedbackData != nil {
-				// sendFeedback requires the mutex to be locked but it will unlock it. 
+				// sendFeedback requires the mutex to be locked but it will unlock it.
 				connection.mutex.Lock()
 				log(1, "cm: Sending Feedback %x", feedbackData)
 				connection.sendFeedback(feedbackData)
@@ -483,6 +482,10 @@ func (plus *ConnectionManager) ProcessPacket(plusPacket *packet.PLUSPacket, remo
 			plus.newConnections <- connection
 		}
 	}
+
+	spin := plusPacket.Spin()
+	vec := plusPacket.Vec()
+
 	plus.mutex.Unlock()
 
 	connection.mutex.Lock()
@@ -494,10 +497,32 @@ func (plus *ConnectionManager) ProcessPacket(plusPacket *packet.PLUSPacket, remo
 		pcfbuf := []byte{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,
 				31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,
 				60,61,62,63}
-    */
-	if packetPSN % 1000 == 0 {
+	*/
+	if packetPSN%1000 == 0 {
 		connection.queuePCFRequest(packet.PCF_TYPE_HOP_COUNT, packet.PCF_INTEGRITY_ZERO, []byte{0}) // send a HOP_COUNT request
 	}
+
+	// TODO: handle overflow
+	if packetPSN > connection.maxPsn && spin != connection.spin {
+		connection.spin = spin
+		if vec <= 2 {
+			connection.vec = vec + 1
+		} else {
+			connection.vec = 3
+		}
+		connection.maxPsn = packetPSN
+		if plus.clientMode {
+			connection.spinToSend = !spin
+		} else {
+			connection.spinToSend = spin
+		}
+		//fmt.Print("!!! ", time.Now().UTC().UnixNano(), time.Now().UTC().UnixNano()-connection.lastReceived, "\n")
+		connection.lastReceived = time.Now().UTC().UnixNano()
+
+	}
+
+	log(0, "cm: received spin: %t %t, vec: %d %d", spin, connection.spinToSend, vec, connection.vec)
+	//fmt.Print("++++++++ Received spin: ", spin, connection.spinToSend, " vec: ", vec, connection.vec, "\n")
 
 	connection.pse = packetPSN
 
@@ -753,6 +778,14 @@ type Connection struct {
 	pcfReadIndex   int
 	pcfElements    int
 
+	// spinbit and VEC support
+	vec          uint8
+	spin         bool
+	maxPsn       uint32
+	spinToSend   bool
+	vecToSend    uint8
+	lastReceived int64
+
 	// used to synchronize field access.
 	mutex *sync.RWMutex
 
@@ -791,7 +824,7 @@ type pcfRequest struct {
 // pair of (packet, error)
 type packetReceived struct {
 	packet *packet.PLUSPacket
-	from net.Addr
+	from   net.Addr
 	err    error
 }
 
@@ -816,6 +849,11 @@ func NewConnection(cat uint64, packetConn net.PacketConn, remoteAddr net.Addr, c
 	connection.pcfFeedback = make(map[uint16][]byte)
 	connection.sendBuffer = make([]byte, connManager.maxPacketSize)
 	connection.headerBuffer = make([]byte, 256)
+
+	connection.vec = 1
+	connection.spin = true
+	connection.spinToSend = false
+	connection.lastReceived = 0
 
 	return &connection
 }
@@ -882,7 +920,7 @@ func (connection *Connection) AddPCFFeedback(feedbackData []byte) error {
 
 var ErrConnClosed error = errors.New("Connection was closed!")
 
-// Read data from this connection. 
+// Read data from this connection.
 // WARNING: Only use this if in listen mode.
 func (connection *Connection) Read(data []byte) (int, error) {
 	packetReceived, ok := <-connection.inChannel //validation/decription happens in the feeder
@@ -902,7 +940,7 @@ func (connection *Connection) Read(data []byte) (int, error) {
 	return n, nil
 }
 
-// Read data from this connection. 
+// Read data from this connection.
 // WARNING: Only use this if in listen mode.
 func (connection *Connection) ReadAndAddr(data []byte) (int, net.Addr, error) {
 	packetReceived, ok := <-connection.inChannel //validation/decription happens in the feeder
@@ -936,7 +974,7 @@ func (connection *Connection) sendFeedback(feedbackData []byte) (int, error) {
 }
 
 // internal write. Expects the mutex to be locked, but this will unlock
-// the mutex. 
+// the mutex.
 func (connection *Connection) write(data []byte, prefix byte) (int, error) {
 	var payload []byte
 
@@ -1064,11 +1102,21 @@ func (connection *Connection) prepareNextRaw(buffer []byte) (uint32, int, error)
 		pse = connection.pse
 	}
 
+	// add spin timing support
+	//print("--- ", time.Now().UTC().UnixNano()-connection.lastReceived, "\n")
+	if time.Now().UTC().UnixNano()-connection.lastReceived > 200000000 {
+		if connection.vec > 1 {
+			connection.vec = 1
+		}
+	}
+
 	if ok {
 		//log(2, "Pending PCF(%d,%d,%x)", pcfType, pcfIntegrity, pcfValue)
 		// Pending PCF, send extended packet
 		n, _, err = packet.WriteExtendedPacket(
 			buffer,
+			connection.spinToSend,
+			connection.vec,
 			connection.defaultLFlag,
 			connection.defaultRFlag,
 			connection.defaultSFlag,
@@ -1084,6 +1132,8 @@ func (connection *Connection) prepareNextRaw(buffer []byte) (uint32, int, error)
 			return 0, -1, err
 		}
 
+		connection.vec = 0
+
 		// Set value to nil in pcfFeedback map to indicate
 		// that this request was sent
 		connection.pcfFeedback[pcfType] = nil
@@ -1091,6 +1141,8 @@ func (connection *Connection) prepareNextRaw(buffer []byte) (uint32, int, error)
 		// No pending PCF, send basic packet
 		n, _, err = packet.WriteBasicPacket(
 			buffer,
+			connection.spinToSend,
+			connection.vec,
 			connection.defaultLFlag,
 			connection.defaultRFlag,
 			connection.defaultSFlag,
@@ -1102,6 +1154,8 @@ func (connection *Connection) prepareNextRaw(buffer []byte) (uint32, int, error)
 		if err != nil {
 			return 0, -1, err
 		}
+
+		connection.vec = 0
 	}
 
 	return connection.psn, n, nil
@@ -1109,7 +1163,7 @@ func (connection *Connection) prepareNextRaw(buffer []byte) (uint32, int, error)
 
 // Prepares the next packet to be sent by creating an empty (no set payload) PLUS packet
 // and returns this. The upper layer should then set the payload of the packet and hand it over
-// to `WritePacket`. (You MUST NOT return packets allocated by this function using ReturnPacket). 
+// to `WritePacket`. (You MUST NOT return packets allocated by this function using ReturnPacket).
 func (connection *Connection) PrepareNextPacket() (*packet.PLUSPacket, error) {
 	connection.mutex.Lock()
 	defer func() {
@@ -1135,10 +1189,19 @@ func (connection *Connection) PrepareNextPacket() (*packet.PLUSPacket, error) {
 		pse = connection.pse
 	}
 
+	//print("--- ", time.Now().UTC().UnixNano()-connection.lastReceived, "\n")
+	if time.Now().UTC().UnixNano()-connection.lastReceived > 200000000 {
+		if connection.vec > 1 {
+			connection.vec = 1
+		}
+	}
+
 	if ok {
 		log(2, "Pending PCF(%d,%d,%x)", pcfType, pcfIntegrity, pcfValue)
 		// Pending PCF, send extended packet
 		plusPacket, err = packet.NewExtendedPLUSPacket(
+			connection.spinToSend,
+			connection.vec,
 			connection.defaultLFlag,
 			connection.defaultRFlag,
 			connection.defaultSFlag,
@@ -1154,12 +1217,16 @@ func (connection *Connection) PrepareNextPacket() (*packet.PLUSPacket, error) {
 			return nil, err
 		}
 
+		connection.vec = 0
+
 		// Set value to nil in pcfFeedback map to indicate
 		// that this request was sent
 		connection.pcfFeedback[pcfType] = nil
 	} else {
 		// No pending PCF, send basic packet
 		plusPacket = packet.NewBasicPLUSPacket(
+			connection.spinToSend,
+			connection.vec,
 			connection.defaultLFlag,
 			connection.defaultRFlag,
 			connection.defaultSFlag,
@@ -1167,6 +1234,9 @@ func (connection *Connection) PrepareNextPacket() (*packet.PLUSPacket, error) {
 			connection.psn,
 			pse,
 			nil)
+
+		connection.vec = 0
+
 	}
 
 	return plusPacket, nil
@@ -1194,7 +1264,7 @@ func (connection *Connection) AddFeedbackData(feedbackData []byte) error {
 	return connection.addFeedbackData(feedbackData)
 }
 
-// internal addFeedbackData. Requires the mutex to be locked. 
+// internal addFeedbackData. Requires the mutex to be locked.
 func (connection *Connection) addFeedbackData(feedbackData []byte) error {
 	plusPacket, err := packet.NewPLUSPacket(feedbackData)
 
@@ -1371,7 +1441,7 @@ func (connection *Connection) SetRemoteAddr(remoteAddr net.Addr) {
 // Sets the CloseConn callback which is invoked when the connection is closed.
 // Beware that while the connection is closed this doesn't necessarily mean that the connection
 // has been fully cleaned-up yet. This callback should not be used to modify the connection or
-// read/write to/from it. 
+// read/write to/from it.
 func (connection *Connection) SetCloseConn(closeConn func(connection *Connection) error) {
 	connection.mutex.Lock()
 	defer connection.mutex.Unlock()
@@ -1457,6 +1527,54 @@ func (connection *Connection) SetSFlag(value bool) {
 	defer connection.mutex.Unlock()
 
 	connection.defaultSFlag = value
+}
+
+// Returns the current VEC
+func (connection *Connection) Vec() uint8 {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+
+	return connection.vec
+}
+
+// Sets the new VEC
+func (connection *Connection) SetVec(value uint8) {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+
+	connection.vec = value
+}
+
+// Returns the current spin
+func (connection *Connection) Spin() bool {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+
+	return connection.spin
+}
+
+// Sets the new spin
+func (connection *Connection) SetSpin(value bool) {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+
+	connection.spin = value
+}
+
+// Returns max PSN
+func (connection *Connection) MaxPsn() uint32 {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+
+	return connection.maxPsn
+}
+
+// Sets the max PSN
+func (connection *Connection) SetMaxPsn(value uint32) {
+	connection.mutex.Lock()
+	defer connection.mutex.Unlock()
+
+	connection.maxPsn = value
 }
 
 // Obtains a W lock. You should not have to call this.

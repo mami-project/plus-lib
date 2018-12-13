@@ -25,7 +25,7 @@ const BASIC_HEADER_LEN uint16 = 20
 const MAX_HEADER_LEN uint16 = 128
 
 // IT's MAGIC!
-const MAGIC uint32 = 0xd8007ff
+const MAGIC uint32 = 0x1b000ff
 
 const PCF_INTEGRITY_ZERO uint8 = 0
 const PCF_INTEGRITY_QUARTER uint8 = 1
@@ -33,6 +33,26 @@ const PCF_INTEGRITY_HALF uint8 = 2
 const PCF_INTEGRITY_FULL uint8 = 3
 
 const PCF_TYPE_HOP_COUNT uint16 = 0x0001
+
+// Returns current VEC
+func (plusPacket *PLUSPacket) Vec() uint8 {
+	return (plusPacket.header[3] >> 5) & 0x03
+}
+
+// Returns current spin
+func (plusPacket *PLUSPacket) Spin() bool {
+	return toBool((plusPacket.header[3] >> 4) & 0x01)
+}
+
+// Sets the VEC
+func (plusPacket *PLUSPacket) SetVec(vec uint8) {
+	plusPacket.header[3] |= vec << 5
+}
+
+// Sets the spin
+func (plusPacket *PLUSPacket) SetSpin(spin bool) {
+	plusPacket.header[3] |= toByte(spin) << 4
+}
 
 // Returns value of the L flag
 func (plusPacket *PLUSPacket) LFlag() bool {
@@ -312,7 +332,7 @@ func (plusPacket *PLUSPacket) PCFValueUnprotected() ([]byte, error) {
 // checks have been done BEFORE calling this function.
 func HeaderWithZeroesRaw(headerBuffer []byte, targetBuffer []byte) {
 	//fmt.Printf("%d %q\n", len(headerBuffer), headerBuffer)
-	
+
 	copy(targetBuffer, headerBuffer)
 
 	if ((headerBuffer[3] >> 0) & 0x01) != 0x01 {
@@ -448,7 +468,7 @@ func (plusPacket *PLUSPacket) setBuffer(buffer_ []byte, doCopy bool) error {
 	xFlag := buffer[3] & 0x01
 
 	magic := binary.BigEndian.Uint32(buffer)
-	magic >>= 4
+	magic >>= 7
 
 	if magic != MAGIC {
 		return errors.New("The wizard is not happy with the magic.")
@@ -544,6 +564,8 @@ func NewPLUSPacket(buffer []byte) (*PLUSPacket, error) {
 // the supplied buffer if not Nil was supplied) and an error (if any).
 func WriteBasicPacket(
 	buffer []byte,
+	spin bool,
+	vec uint8,
 	lFlag bool,
 	rFlag bool,
 	sFlag bool,
@@ -584,7 +606,15 @@ func WriteBasicPacket(
 		flags |= uint8(0x02)
 	}
 
-	binary.BigEndian.PutUint32(buffer, (MAGIC<<4)|uint32(flags))
+	spin_data := uint8(0x00)
+
+	spin_data |= (vec << 5)
+
+	if spin {
+		spin_data |= uint8(0x10)
+	}
+
+	binary.BigEndian.PutUint32(buffer, (MAGIC<<7)|uint32(spin_data)|uint32(flags))
 	binary.BigEndian.PutUint64(buffer[4:], cat)
 	binary.BigEndian.PutUint32(buffer[12:], psn)
 	binary.BigEndian.PutUint32(buffer[16:], pse)
@@ -602,6 +632,8 @@ func WriteBasicPacket(
 // the supplied buffer if not Nil was supplied) and an error (if any).
 func WriteExtendedPacket(
 	buffer []byte,
+	spin bool,
+	vec uint8,
 	lFlag bool,
 	rFlag bool,
 	sFlag bool,
@@ -673,7 +705,15 @@ func WriteExtendedPacket(
 		flags |= uint8(0x02)
 	}
 
-	binary.BigEndian.PutUint32(buffer, (MAGIC<<4)|uint32(flags))
+	spin_data := uint8(0x00)
+
+	spin_data |= (vec << 5)
+
+	if spin {
+		spin_data |= uint8(0x10)
+	}
+
+	binary.BigEndian.PutUint32(buffer, (MAGIC<<7)|uint32(spin_data)|uint32(flags))
 	binary.BigEndian.PutUint64(buffer[4:], cat)
 	binary.BigEndian.PutUint32(buffer[12:], psn)
 	binary.BigEndian.PutUint32(buffer[16:], pse)
@@ -716,6 +756,8 @@ func WriteExtendedPacket(
 // Construct a new basic plus packet
 //  (with basic header)
 func NewBasicPLUSPacket(
+	spin bool,
+	vec uint8,
 	lFlag bool,
 	rFlag bool,
 	sFlag bool,
@@ -728,6 +770,8 @@ func NewBasicPLUSPacket(
 
 	_, buf, _ := WriteBasicPacket(
 		nil,
+		spin,
+		vec,
 		lFlag,
 		rFlag,
 		sFlag,
@@ -745,6 +789,8 @@ func NewBasicPLUSPacket(
 // Construct a new extended plus packet
 //  (with extended header)
 func NewExtendedPLUSPacket(
+	spin bool,
+	vec uint8,
 	lFlag bool,
 	rFlag bool,
 	sFlag bool,
@@ -760,6 +806,8 @@ func NewExtendedPLUSPacket(
 
 	_, buf, err := WriteExtendedPacket(
 		nil,
+		spin,
+		vec,
 		lFlag,
 		rFlag,
 		sFlag,
