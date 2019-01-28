@@ -1104,7 +1104,7 @@ func (connection *Connection) prepareNextRaw(buffer []byte) (uint32, int, error)
 
 	// add spin timing support
 	//print("--- ", time.Now().UTC().UnixNano()-connection.lastReceived, "\n")
-	if time.Now().UTC().UnixNano()-connection.lastReceived > 1000000000 {
+	if time.Now().UTC().UnixNano()-connection.lastReceived > 5000000 {
 		if connection.vec > 1 {
 			connection.vec = 1
 		}
@@ -1190,7 +1190,7 @@ func (connection *Connection) PrepareNextPacket() (*packet.PLUSPacket, error) {
 	}
 
 	//print("--- ", time.Now().UTC().UnixNano()-connection.lastReceived, "\n")
-	if time.Now().UTC().UnixNano()-connection.lastReceived > 1000000000 {
+	if time.Now().UTC().UnixNano()-connection.lastReceived > 5000000 {
 		if connection.vec > 1 {
 			connection.vec = 1
 		}
